@@ -1,0 +1,149 @@
+---
+title: "OpportunityAnalyzer"
+editor: source
+---
+
+```{r}
+
+library(tidyverse)
+library(gmailr)
+library(reticulate)
+
+```
+
+## Get email data
+
+```{r}
+# Authorization
+gm_auth_configure(path = here::here(Sys.getenv("CLIENT_SECRET")))
+gm_auth()
+
+test <- gm_labels()
+
+my_messages <- gm_messages(label_ids = "Label_5096562256871952832", num_results = 1000) |> 
+  flatten() |> 
+  flatten()
+
+message_ids <- my_messages |> 
+  enframe() |> 
+  tidylog::filter(name == "") |> 
+  unnest_auto(col = value)
+
+messages <- map(
+  .x = message_ids$id,
+  .f = gm_message, 
+  .progress = T
+)
+```
+
+## Prep message content
+
+```{r}
+messages_data <- tibble::tibble(
+  id = map(.x = messages, .f = gm_id),
+  date = map(.x = messages, .f = gm_date),
+  from = map(.x = messages, .f = gm_from),
+  to = map(.x = messages, .f = gm_to),
+  subject = map(.x = messages, .f = gm_subject),
+  body = map(.x = messages, .f = gm_body), 
+  html_body = map(.x = messages, .f = gm_mime), 
+  attachments = map(.x = messages, .f = gm_attachments)
+) |> 
+  tidylog::mutate(
+    body = map(.x = body, .f = unlist), 
+    date = lubridate::date(lubridate::dmy_hms(str_sub(date, start = 5)))
+  ) |> 
+  tidylog::mutate_if(.predicate = is.list, .funs = as.character)
+
+
+
+```
+
+```{r}
+opportunities <- messages_data |> 
+  transmute(
+    id, 
+    date, 
+    from,
+    body, 
+    length = str_length(body)
+  ) |> 
+  tidylog::filter(
+    length > 4, 
+    str_detect(from, pattern = "^Gerrie van Wanrooij")
+  )
+
+```
+
+## Python dependencies
+
+```{python}
+import pandas as pd
+from langchain_community.llms import Ollama
+from concurrent.futures import ProcessPoolExecutor
+
+llama2 = Ollama(model = "llama2")
+mistral = Ollama(model = "mistral")
+
+
+def llama2Check(text, context, question):
+
+    prompt = f"{context}\n\nTekst: {text}\n\nVraag: {question}"
+    response = llama2.invoke(input = prompt)
+    return response
+
+def mistralCheck(text, context, question):
+
+    prompt = f"{context}\n\nTekst: {text}\n\nVraag: {question}"
+    response = mistral.invoke(input = prompt)
+    return response
+  
+```
+
+# Apply the python methods
+
+## Formulate the context and question
+
+```{python}
+context = """Gegeven de volgende tekst over een vacature, identificeer en structureer de belangrijkste informatie in een JSON-formaat. Zorg ervoor dat de JSON de volgende elementen bevat: naam van de broker, naam van de opdrachtgever, naam van de functie, standplaats van de vacature, gewenste startdatum, functie-eisen (in een lijst), rolomschrijving, en andere relevante kenmerken. Gebruik de informatie uit de tekst om deze velden zo volledig mogelijk in te vullen."""
+
+question = """Extraheer de gevraagde elementen en output een json met de volgende structuur:
+  {
+  "broker": "[Naam van de broker]",
+  "opdrachtgever": "[Opdrachtgever]",
+  "naam_van_de_functie": "[Naam van de functie]",
+  "standplaats": "[Standplaats van de vacature]",
+  "gewenste_startdatum": "[Gewenste startdatum]",
+  "functie-eisen": [
+    "[Eis 1]",
+    "[Eis 2]",
+    "..."
+  ],
+  "rolomschrijving": "[Beschrijving van de rol]",
+  "andere_relevante_kenmerken": [
+    "[Kenmerk 1]",
+    "[Kenmerk 2]",
+    "..."
+  ]
+}
+
+"""
+```
+
+# Apply the methods
+
+```{python}
+
+opps = r.opportunities
+
+opps['output'] = opps['body'].apply(lambda x: mistralCheck(x, context, question))
+
+
+```
+
+# Inspect result
+
+```{r}
+respons <- reticulate::py$opps |> 
+  select(body, output)
+```
