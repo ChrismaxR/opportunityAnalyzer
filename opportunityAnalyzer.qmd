@@ -2,13 +2,15 @@
 title: "OpportunityAnalyzer"
 editor: source
 ---
+## Manage R packages
 
 ```{r}
-
 library(tidyverse)
 library(gmailr)
 library(reticulate)
 
+source(here::here("test_ollama_api.R"))
+use_python(Sys.getenv("RETICULATE_PYTHON"))
 ```
 
 ## Get email data
@@ -17,9 +19,10 @@ library(reticulate)
 # Authorization
 gm_auth_configure(path = here::here(Sys.getenv("CLIENT_SECRET")))
 gm_auth()
+```
 
-test <- gm_labels()
 
+```{r}
 my_messages <- gm_messages(label_ids = "Label_5096562256871952832", num_results = 1000) |> 
   flatten() |> 
   flatten()
@@ -39,6 +42,8 @@ messages <- map(
 ## Prep message content
 
 ```{r}
+
+#Rectangle gmail data:
 messages_data <- tibble::tibble(
   id = map(.x = messages, .f = gm_id),
   date = map(.x = messages, .f = gm_date),
@@ -51,29 +56,54 @@ messages_data <- tibble::tibble(
 ) |> 
   tidylog::mutate(
     body = map(.x = body, .f = unlist), 
-    date = lubridate::date(lubridate::dmy_hms(str_sub(date, start = 5)))
+    date = lubridate::date(lubridate::dmy_hms(str_sub(date, start = 5))), 
+    length = str_length(body)
   ) |> 
   tidylog::mutate_if(.predicate = is.list, .funs = as.character)
 
-
-
-```
-
-```{r}
+## Prep data that I want to run through the local LLM
 opportunities <- messages_data |> 
   transmute(
     id, 
     date, 
     from,
     body, 
-    length = str_length(body)
+    length
   ) |> 
   tidylog::filter(
-    length > 4, 
-    str_detect(from, pattern = "^Gerrie van Wanrooij")
+    length > 4
+  ) 
+
+```
+
+## Ollama API + custom httr2 call
+```{r}
+
+context <-  "Je bent een expert op het gebied van vacatureomschrijvingen. Hieronder volgt een vacaturetekst en ik wil dat je de belangrijkste informatie van de vacature extraheert. Zorg dat je minimaal de volgende elementen vind: naam van de broker, naam van de opdrachtgever, naam van de functie, standplaats van de vacature, gewenste startdatum, functie-eisen (in een lijst), rolomschrijving, tariefindicatie en andere relevante kenmerken. Negeer alles in de vacature tekst dat Entrador en Gerrie van Wanrooij betreft."
+
+question <- "Extraheer de gevraagde elementen en output een json met de volgende structuur:\n  {\n  \"broker\": \"[Naam van de broker]\",\n  \"opdrachtgever\": \"[Opdrachtgever]\",\n  \"naam_van_de_functie\": \"[Naam van de functie]\",\n  \"standplaats\": \"[Standplaats van de vacature]\",\n  \"gewenste_startdatum\": \"[Gewenste startdatum]\",\n  \"functie-eisen\": [\n    \"[Eis 1]\",\n    \"[Eis 2]\",\n    \"...\"\n  ],\n  \"rolomschrijving\": \"[Beschrijving van de rol]\",\n  \"andere_relevante_kenmerken\": [\n    \"[Kenmerk 1]\",\n    \"[Kenmerk 2]\",\n    \"...\"\n  ]\n}\n\n"
+
+
+ollama_apply <- opportunities |> 
+  mutate(
+    prompt = str_c(context, body, question, sep = "\\n"), 
+    model = "llama2"
+  )
+
+ollama_pass_through <- map2_df(
+  .f = ollamaCaller,
+  .x = ollama_apply$model, 
+  .y = ollama_apply$prompt,
+  .progress = T
+)
+
+ollama_clean <- ollama_pass_through |> 
+  mutate(
+    json = map(.x = response, .f = jsonlite::toJSON)
   )
 
 ```
+
 
 ## Python dependencies
 
@@ -82,22 +112,17 @@ import pandas as pd
 from langchain_community.llms import Ollama
 from concurrent.futures import ProcessPoolExecutor
 
+# Don't forget to run the Ollama macOS app, otherwise the ollama env won't run.
 llama2 = Ollama(model = "llama2")
 mistral = Ollama(model = "mistral")
 
-
-def llama2Check(text, context, question):
-
-    prompt = f"{context}\n\nTekst: {text}\n\nVraag: {question}"
-    response = llama2.invoke(input = prompt)
-    return response
-
 def mistralCheck(text, context, question):
-
+    from langchain_community.llms import Ollama
+    mistral = Ollama(model="mistral")  # Initialize inside the function for process safety
     prompt = f"{context}\n\nTekst: {text}\n\nVraag: {question}"
-    response = mistral.invoke(input = prompt)
+    response = mistral.invoke(input=prompt)
     return response
-  
+
 ```
 
 # Apply the python methods
@@ -134,14 +159,25 @@ question = """Extraheer de gevraagde elementen en output een json met de volgend
 
 ```{python}
 
+# reference the r object with the relevant data I want to pass throught the model
 opps = r.opportunities
 
-opps['output'] = opps['body'].apply(lambda x: mistralCheck(x, context, question))
+# This wrapper function is for passing multiple arguments to the function being executed in parallel
+def process_row(row):
+    return mistralCheck(row, context, question)
 
+if __name__ == "__main__":  # Required for multiprocessing to work properly
+    # Adjust 'max_workers' based on the number of available CPU cores for optimal performance
+    with ProcessPoolExecutor(max_workers=4) as executor:
+        # Submit tasks and collect results
+        results = list(executor.map(process_row, opps['body']))
+
+    # Assign results back to the DataFrame
+    opps['output'] = results
 
 ```
 
-# Inspect result
+# Inspect result in R
 
 ```{r}
 respons <- reticulate::py$opps |> 

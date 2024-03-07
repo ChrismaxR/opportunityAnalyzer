@@ -1,4 +1,3 @@
-library(httr2)
 
 # Ollama API documentatie: https://github.com/ollama/ollama/blob/main/docs/api.md
 
@@ -38,8 +37,8 @@ library(httr2)
 
 ollamaCaller <- function(model, prompt) {
   
-  req <- request("http://localhost:11434/api/generate") |>  
-    req_body_json(
+  req <- httr2::request("http://localhost:11434/api/generate") |>  
+    httr2::req_body_json(
       data = list(
         model  = model, 
         prompt = prompt, 
@@ -48,31 +47,34 @@ ollamaCaller <- function(model, prompt) {
       ),
       type = "application/json"
     ) |> 
-    req_perform()
+    httr2::req_perform()
   
-  resp <- resp_body_json(req)
+  resp <- httr2::resp_body_json(req)
   
+  return(resp)
   # tijden in response zijn in nanoseconden. Om om te rekenen naar seconden, gebruik de divider:
-  divider <- 1000000000
+  #divider <- 1000000000
   
+  # Test case voor uitgesplitste variabelen
+  # resp_cleaned <- tibble::tibble(
+  #   model = resp$model,
+  #   created_at = resp$created_at,
+  #   response = resp$response,
+  #   total_dur_sec = resp$total_duration/divider,
+  #   load_dur_sec = resp$load_duration/divider, 
+  #   prompt_eval_dur_sec = resp$prompt_eval_duration/divider,
+  #   done = resp$done
+  # )
   # 
-  resp_cleaned <- tibble::tibble(
-    model = resp$model,
-    created_at = resp$created_at,
-    response = resp$response,
-    total_dur_sec = resp$total_duration/divider,
-    load_dur_sec = resp$load_duration/divider, 
-    prompt_eval_dur_sec = resp$prompt_eval_duration/divider,
-    done = resp$done
-  )
-  
-  return(resp_cleaned)
-  
+  # return(resp_cleaned)
+  # 
 }
 
 # Testen van de functie om performance te checken
-test_calls <- purrr::map2_df(
-  .f = ollamaCaller, 
-  .x = c("llama2", "mistral"),
-  .y = c("What is the capital of Germany", "What is the capital of Germany")
-)
+# test_calls <- purrr::map2_df(
+#   .f = ollamaCaller, 
+#   .x = c("llama2", "llama2"),
+#   .y = c("What is the current capital of Greece", "What is the current capital of Greece"), 
+#   .progress = T
+# )
+
